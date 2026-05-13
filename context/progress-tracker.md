@@ -24,8 +24,8 @@ After completing any feature:
 ## Current Status
 
 **Phase:** 1 — Foundation
-**Current feature:** Not started
-**Next up:** 01 Homepage
+**Current feature:** Completed 01 Homepage
+**Next up:** 02 InsForge auth
 **Blocking issues:** None
 
 ---
@@ -34,7 +34,7 @@ After completing any feature:
 
 ### Phase 1 — Foundation
 
-- [ ] 01 Homepage
+- [x] 01 Homepage
 - [ ] 02 InsForge auth
 - [ ] 03 Database schema
 - [ ] 04 Smart redirect
@@ -94,14 +94,8 @@ After completing any feature:
 
 ## Completed Features
 
-_None yet. Features will be logged here as they are completed._
-
-Format when adding:
-
-```
-### ✅ 01 Homepage — completed [date]
-Notes: [anything notable about how it was built or decisions made]
-```
+### ✅ 01 Homepage — completed 2026-05-13
+Notes: shadcn/ui init (v4, Tailwind v4 compatible) and lucide-react installed as part of this feature. globals.css token system added alongside shadcn's base variables — our @theme inline block appended after shadcn's, overriding --color-primary/secondary/muted with our warm text palette. Border token classes are border-border-default / border-border-subtle / border-border-strong (Tailwind v4 generates border-<colorname> from --color-border-<x>). Font variables fixed in layout.tsx from --font-geist-sans → --font-sans. MATCH_THRESHOLD = 70 added to lib/utils.ts. All components are Server Components — no use client anywhere on this page.
 
 ---
 

@@ -34,9 +34,49 @@ Notes:      [any important pattern notes]
 
 ## Components Built
 
-_This section is empty. Components will be added here as they are built during the project._
+### Navbar
+File: components/layout/Navbar.tsx
+Wrapper:    `fixed top-0 z-50 h-16 w-full bg-surface border-b border-border-default`
+Inner:      `max-w-7xl mx-auto px-6 h-full flex items-center justify-between`
+Logo:       `text-primary font-semibold text-base tracking-tight`
+Nav links:  `text-sm text-muted hover:text-secondary transition-colors duration-150`
+CTA link:   `h-9 px-4 rounded-xl bg-accent-primary hover:bg-accent-hover text-bg-base text-sm font-medium transition-colors duration-150 inline-flex items-center`
+Notes:      Static Server Component. CTA is a styled Link, not Button component. Find Jobs → /login until auth is wired.
 
-_First component added will set the pattern for all others. Pay close attention to the first card, button, and badge built — they become the reference for everything that follows._
+### Footer
+File: components/layout/Footer.tsx
+Wrapper:    `bg-surface border-t border-border-default`
+Inner:      `max-w-7xl mx-auto px-6 py-6`
+Text:       `text-sm text-muted`
+Notes:      Homepage only. Minimal — copyright text only.
+
+### Hero
+File: components/homepage/Hero.tsx
+Wrapper:    `min-h-screen flex flex-col items-center justify-center text-center px-6`
+Headline:   `text-5xl font-bold text-primary leading-tight max-w-2xl`
+Subhead:    `mt-4 text-lg text-secondary max-w-xl`
+CTA link:   `mt-8 h-11 px-6 rounded-xl bg-accent-primary hover:bg-accent-hover hover:shadow-accent text-bg-base text-base font-medium transition-colors duration-150 inline-flex items-center`
+Notes:      Hero CTA is larger than standard (h-11 px-6 vs h-9 px-4). hover:shadow-accent on primary CTA only.
+
+### HowItWorks
+File: components/homepage/HowItWorks.tsx
+Section:    `py-24 px-6`
+Grid:       `grid grid-cols-1 md:grid-cols-3 gap-6`
+Card:       `bg-elevated rounded-2xl border border-border-default p-6`
+Step num:   `text-accent-primary font-mono text-sm font-bold mb-3`
+Title:      `text-base font-semibold text-primary mb-2`
+Body:       `text-sm text-muted`
+Notes:      Data lives in a typed const array in the component file. Pattern for all future step/feature card grids.
+
+### Features
+File: components/homepage/Features.tsx
+Section:    `py-24 px-6 bg-surface`
+Grid:       `grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6`
+Card:       `bg-elevated rounded-2xl border border-border-default p-6`
+Icon:       `h-8 w-8 text-accent-primary mb-3` with `strokeWidth={1.5}`
+Title:      `text-base font-semibold text-primary mb-2`
+Body:       `text-sm text-muted`
+Notes:      Feature type defined inline above component. LucideIcon type used for icon prop. bg-surface section background creates contrast with HowItWorks (bg-base).
 
 ---
 
