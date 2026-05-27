@@ -50,13 +50,10 @@ next-env.d.ts
 .github/copilot*
 
 # Project context and planning docs
-/context
-.kilocode
-.qoder
-.qwen
-.roo
-.trae
-.windsurf
-
-.memory.md
-.current-test.md
+# /context
+# .kilocode
+# .qoder
+# .qwen
+# .roo
+# .trae
+# .windsurf

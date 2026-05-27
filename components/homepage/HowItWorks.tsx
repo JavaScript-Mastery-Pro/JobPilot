@@ -11,8 +11,8 @@ const steps = [
   },
   {
     number: "03",
-    title: "Let AI apply",
-    body: "Strong matches get tailored documents and company career forms filled for you.",
+    title: "Tailor and decide",
+    body: "Strong matches get scored context, source links, and a tailored resume package for your next step.",
   },
 ];
 

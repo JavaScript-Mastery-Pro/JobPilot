@@ -113,11 +113,10 @@ function AutoAppliedEmptyState() {
         aria-hidden="true"
       />
       <h2 className="text-base font-medium text-text-muted">
-        No auto-applied jobs yet
+        No application outcomes yet
       </h2>
       <p className="max-w-xs text-center text-sm leading-6 text-text-faint">
-        Completed auto-apply attempts will appear here after the agent submits
-        or fails a company application.
+        Completed application records will appear here when jobs are updated.
       </p>
     </div>
   );
@@ -176,7 +175,7 @@ export function AutoAppliedTable({ jobs }: AutoAppliedTableProps) {
       <div className="border-b border-default px-5 py-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-sm text-accent-text">Auto-applied jobs</p>
+            <p className="text-sm text-accent-text">Application records</p>
             <h1 className="mt-1 text-3xl font-semibold text-text-primary">
               Application outcomes
             </h1>

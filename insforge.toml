@@ -1,5 +1,5 @@
 [auth]
 allowed_redirect_urls = [
   "http://localhost:3000/api/auth/callback",
-  "https://jobpilot-codex.vercel.app/api/auth/callback"
+  "https://jobpilot-jsm.vercel.app/api/auth/callback"
 ]

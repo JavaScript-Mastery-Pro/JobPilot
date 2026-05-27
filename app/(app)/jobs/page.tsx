@@ -2,6 +2,7 @@ import { Activity, ChevronLeft, ChevronRight, Filter } from "lucide-react";
 import Link from "next/link";
 
 import { AgentControls } from "@/components/dashboard/AgentControls";
+import { ImportJobUrl } from "@/components/jobs/ImportJobUrl";
 import { JobsInventoryTable } from "@/components/jobs/JobsInventoryTable";
 import { getAccessToken, requireCurrentUser } from "@/lib/auth";
 import { createInsforgeServer } from "@/lib/insforge-server";
@@ -625,6 +626,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
         defaultJobTitle={jobsResult.defaultJobTitle}
         defaultLocation={jobsResult.defaultLocation}
       />
+      <ImportJobUrl />
       {/* <JobsRunContext run={jobsResult.runContext} /> */}
       <JobsFilters
         statusFilter={jobsResult.statusFilter}

@@ -36,14 +36,15 @@ const STATUS_CONFIG: Record<string, StatusConfig> = {
     Icon: CheckCircle2,
   },
   applying: {
-    label: "Applying…",
+    label: "Not applied",
     className:
-      "border-state-warning/20 bg-state-warning-dim text-state-warning",
+      "border-state-neutral/20 bg-state-neutral-dim text-state-neutral",
     Icon: Clock,
   },
   queued: {
-    label: "Queued",
-    className: "border-state-info/20 bg-state-info-dim text-state-info",
+    label: "Not applied",
+    className:
+      "border-state-neutral/20 bg-state-neutral-dim text-state-neutral",
     Icon: Clock,
   },
   needs_input: {
@@ -360,14 +361,11 @@ export function JobDetails({ job }: JobDetailsProps) {
             </div>
           </section>
 
-          {/* Tailor + apply */}
+          {/* Resume tailoring */}
           <TailorAndApply
             jobId={job.id}
             hasBaseResume={job.hasBaseResume}
             isTailored={job.isTailored}
-            status={job.status}
-            isEasyApply={job.isEasyApply}
-            linkedinConnected={job.linkedinConnected}
           />
 
           {/* Timeline */}
