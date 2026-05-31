@@ -60,3 +60,6 @@ next-env.d.ts
 
 .memory.md
 .current-test.md
+/current-test.md
+memory.md
+browserbase-test.spec.md

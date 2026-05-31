@@ -5,11 +5,13 @@ import { unlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import OpenAI from "openai";
 import { z } from "zod";
 
 import {
   closeStagehandSession,
   createStagehandSession,
+  normalizeStagehandModelName,
   type StagehandSession,
 } from "@/lib/stagehand";
 import { generateCoverLetterForJob } from "@/agent/cover-letter";
@@ -135,7 +137,7 @@ const submissionSchema = z.object({
   submitted: z
     .boolean()
     .describe(
-      "Whether the page clearly shows the application was submitted or received.",
+      "True if the application was submitted. This includes: explicit confirmation messages, thank-you pages, success banners, AND post-submission next-step pages (e.g. 'complete your interview', 'your application is under review', 'check your email for next steps', 'you\'ve applied'). False only if the form is still open and unfilled, or if an error occurred.",
     ),
   evidence: z
     .string()
@@ -186,7 +188,26 @@ const externalApplyReviewSchema = z.object({
 
 type ExternalApplyReview = z.infer<typeof externalApplyReviewSchema>;
 
-const EXTERNAL_APPLY_AGENT_MODEL = "openai/gpt-4o";
+const CLAUDE_SONNET_PRIMARY_MODEL = normalizeStagehandModelName(
+  process.env.EXTERNAL_APPLY_AGENT_MODEL?.trim() ||
+    "anthropic/claude-sonnet-4-6",
+);
+const CLAUDE_SONNET_FALLBACK_MODEL = "anthropic/claude-3-7-sonnet-20250219";
+const EASY_APPLY_AGENT_MODEL = normalizeStagehandModelName(
+  process.env.EASY_APPLY_AGENT_MODEL?.trim() || "anthropic/claude-sonnet-4-6",
+);
+const EXTERNAL_APPLY_AGENT_MODEL = CLAUDE_SONNET_PRIMARY_MODEL;
+const EXTERNAL_APPLY_VIEWPORT = { width: 1288, height: 711 };
+
+function isModelNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+
+  return message.includes("not_found_error") || message.includes("model:");
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -233,23 +254,6 @@ function isProfileRow(value: unknown): value is ProfileRow {
     typeof value.disability_status === "string" &&
     typeof value.application_notes === "string" &&
     typeof value.resume_pdf_url === "string"
-  );
-}
-
-function isJobRow(value: unknown): value is JobRow {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.id === "string" &&
-    typeof value.title === "string" &&
-    typeof value.company === "string" &&
-    typeof value.location === "string" &&
-    typeof value.external_apply_url === "string" &&
-    typeof value.description === "string" &&
-    typeof value.match_score === "number" &&
-    typeof value.match_reason === "string"
   );
 }
 
@@ -301,14 +305,6 @@ function isRunRow(value: unknown): value is RunRow {
   }
 
   return typeof value.jobs_failed === "number";
-}
-
-function getJobRows(value: unknown): JobRow[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((row: unknown): row is JobRow => isJobRow(row));
 }
 
 function getWorkAuthorizationLabel(value: string): string {
@@ -683,6 +679,148 @@ async function runAct(input: {
   }
 }
 
+function getOpenAIClient(): OpenAI {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("Missing OPENAI_API_KEY.");
+  }
+  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+}
+
+/**
+ * Generate a short 2-3 sentence motivation answer server-side using GPT-4o.
+ * Returns a plain string under 400 characters so the agent can fill it via
+ * page.fill() (instant) instead of character-by-character typing.
+ */
+async function generateShortMotivation(input: {
+  variables: Record<string, string>;
+}): Promise<string> {
+  try {
+    const { variables: v } = input;
+    const client = getOpenAIClient();
+    const response = await client.chat.completions.create({
+      model: "gpt-4o",
+      max_tokens: 120,
+      temperature: 0.4,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            'You generate short, honest job application answers. Return JSON: { "answer": ".." }. The answer must be 2-3 sentences and under 400 characters. Do not add headers, bullet points, or salutations.',
+        },
+        {
+          role: "user",
+          content: [
+            `Role: ${v.targetRole} at ${v.company}`,
+            `Skills: ${v.skills}`,
+            `Experience summary: ${v.workExperience?.slice(0, 400)}`,
+            `Application notes: ${v.applicationNotes?.slice(0, 200)}`,
+            "",
+            "Write a 2-3 sentence answer for an open-ended motivation question like 'Why do you want to work here?' or 'Tell us about yourself.' Keep it under 400 characters.",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    const content = response.choices[0]?.message.content ?? "";
+    const parsed = JSON.parse(content) as { answer?: string };
+    const answer = parsed.answer?.trim() ?? "";
+
+    if (answer && answer.length <= 400) {
+      return answer;
+    }
+
+    // Truncate at last sentence boundary within 400 chars
+    return answer.slice(0, 397) + "...";
+  } catch (err) {
+    console.error("[agent/apply/generateShortMotivation]", err);
+    // Fallback: build a minimal answer from raw variables
+    return `I'm excited to bring my ${input.variables.yearsExperience} years of experience and skills in ${input.variables.skills?.split(",")[0]?.trim()} to this ${input.variables.targetRole} role.`;
+  }
+}
+
+/**
+ * observe() + act() sequence for standard known fields.
+ *
+ * Uses stagehand.observe() to locate each field by natural language description,
+ * then passes the ObserveResult directly to stagehand.act() so it targets the
+ * exact discovered element — no AI re-lookup, no character-by-character typing.
+ *
+ * Textareas receive the pre-generated shortMotivation answer via page.fill()
+ * (single CDP command, instant). The agent is left only with dropdowns, radio
+ * buttons, checkboxes, custom widgets, and the submit step.
+ */
+async function observeAndFillStandardFields(input: {
+  session: StagehandSession;
+  variables: Record<string, string>;
+  shortMotivation: string;
+}): Promise<void> {
+  const { stagehand } = input.session;
+  const { variables: v } = input;
+
+  // Each entry: observe query → value to fill.
+  // observe() finds the element; act() fills it using the discovered selector.
+  const standardFields: Array<{ query: string; value: string }> = [
+    { query: "the first name text input field", value: v.firstName },
+    { query: "the last name text input field", value: v.lastName },
+    { query: "the email address input field", value: v.email },
+    { query: "the phone number input field", value: v.phone },
+    { query: "the LinkedIn profile URL input field", value: v.linkedinUrl },
+    {
+      query: "the personal website or portfolio URL input field",
+      value: v.portfolioUrl,
+    },
+    {
+      query: "the location or city text input field",
+      value: v.location,
+    },
+  ];
+
+  for (const { query, value } of standardFields) {
+    if (!value) continue;
+    try {
+      const observations = await stagehand.observe(
+        `Find ${query} on the application form`,
+      );
+      const target = observations[0];
+      if (!target) continue;
+
+      // Pass the ObserveResult directly — Stagehand uses the known selector
+      // instead of a fresh AI lookup, making the action fully deterministic.
+      await stagehand.act(
+        {
+          selector: target.selector,
+          description: `Fill with "${value}"`,
+          method: "fill",
+          arguments: [value],
+        },
+        { timeout: 15_000 },
+      );
+    } catch {
+      // Non-fatal — agent handles any field that observe() couldn't find
+    }
+  }
+
+  // Fill open-ended textareas instantly via page.fill() (single CDP write).
+  // This avoids character-by-character typing which causes 45s timeouts.
+  const page = stagehand.context.pages()[0];
+  if (page) {
+    try {
+      const textareas = page.locator("textarea:visible");
+      const count = await textareas.count();
+      for (let i = 0; i < count; i++) {
+        try {
+          await textareas.nth(i).fill(input.shortMotivation);
+        } catch {
+          // Non-fatal
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+}
+
 async function createResumeTempFile(input: {
   accessToken: string;
   resumePath: string;
@@ -724,12 +862,33 @@ async function tryAttachResume(input: {
     return false;
   }
 
+  const page = input.session.stagehand.context.pages()[0];
+  if (!page) {
+    return false;
+  }
+
+  // Strategy 1: target hidden file inputs directly — most reliable across ATS platforms.
+  // Many modern ATS UIs hide <input type="file"> behind a styled button; setInputFiles
+  // works on the hidden input regardless of visibility.
+  try {
+    const fileInputs = page.locator('input[type="file"]');
+    const count = await fileInputs.count();
+    if (count > 0) {
+      await fileInputs.first().setInputFiles(input.resumeFilePath);
+      return true;
+    }
+  } catch (err) {
+    console.warn("[agent/apply/attachResume/direct]", err);
+  }
+
+  // Strategy 2: fall back to observe() for custom upload widgets.
   try {
     const uploadActions = await input.session.stagehand.observe(
       "Find the resume, CV, or file upload control for attaching an applicant resume.",
     );
+    // Accept any action mentioning resume, cv, upload, or attachment
     const uploadAction = uploadActions.find((action) =>
-      action.description.toLowerCase().includes("resume"),
+      /resume|cv|upload|attach/i.test(action.description),
     );
     const selector = uploadAction?.selector;
 
@@ -737,16 +896,10 @@ async function tryAttachResume(input: {
       return false;
     }
 
-    const page = input.session.stagehand.context.pages()[0];
-
-    if (!page) {
-      return false;
-    }
-
     await page.locator(selector).setInputFiles(input.resumeFilePath);
     return true;
   } catch (error) {
-    console.error("[agent/apply/attachResume]", error);
+    console.error("[agent/apply/attachResume/observe]", error);
     return false;
   }
 }
@@ -793,7 +946,7 @@ async function submitApplication(input: {
     return confirmation.submitted;
   } catch (error) {
     console.error("[agent/apply/extractSubmission]", error);
-    return true;
+    return false;
   }
 }
 
@@ -821,6 +974,7 @@ async function extractExternalApplyReview(input: {
 async function submitExternalApplicationWithAgent(input: {
   session: StagehandSession;
   variables: Record<string, string>;
+  shortMotivation: string;
 }): Promise<{
   submitted: boolean;
   review?: ExternalApplyReview;
@@ -830,60 +984,161 @@ async function submitExternalApplicationWithAgent(input: {
     mode: "hybrid",
     model: EXTERNAL_APPLY_AGENT_MODEL,
   });
-  const result = await agent.execute({
-    maxSteps: 40,
-    toolTimeout: 45_000,
-    variables: input.variables,
-    instruction: [
-      "Fill every field in this job application form and then submit it.",
-      "",
-      "CANDIDATE DATA — use these exact values, one variable per field:",
-      "First Name field → %firstName%",
-      "Last Name field → %lastName%",
-      "Full Name field (if combined) → %fullName%",
-      "Email field → %email%",
-      "Phone field → %phone%",
-      "Location / City field → %location%",
-      "LinkedIn URL field → %linkedinUrl%",
-      "Portfolio / Website field → %portfolioUrl%",
-      "Current Title / Role field → %targetRole%",
-      "Years of Experience field → %yearsExperience%",
-      "Skills field → %skills%",
-      "Work Authorization field → %workAuthorization%",
-      "Sponsorship field → %sponsorshipRequirement%",
-      "Salary Expectation field → %salaryExpectation%",
-      "Start Date / Availability field → %startAvailability%",
-      "Relocation field → %relocationPreference%",
-      "",
-      "For open-ended questions about motivation, experience, projects, opinions, or craft:",
-      "Write a concise professional answer drawing from:",
-      "  Work experience: %workExperience%",
-      "  Projects: %projects%",
-      "  Education: %education%",
-      "  Achievements: %achievements%",
-      "  Extra context: %applicationNotes%",
-      "",
-      "For resume or CV upload: attach the file at %resumePdfUrl%.",
-      "",
-      "Fill every field you can from the variables above, including free-text motivation and essay questions.",
-      "For 'How did you hear about this role' use 'LinkedIn'.",
-      "",
-      "Only skip a field and note it as a blocker if it falls into one of these hard stops:",
-      "- A field requiring an external secret, code, or API call not in the variables",
-      "- A mandatory CAPTCHA or account creation wall that prevents continuing",
-      "",
-      "Fill ALL other fields including demographic, veteran, disability, salary, and sponsorship using the matching variables.",
-      "Prefer not to answer is a valid option for optional disclosure fields when the variable value indicates it.",
-      "",
-      "After filling every fillable field, attempt to submit. If a hard-stop blocker field is still empty and required, call done with taskComplete=false and describe the exact blocker.",
-    ].join("\n"),
-  });
+  const instruction = [
+    "Goal: complete this application accurately using candidate variables, then submit only if required fields are truly complete.",
+    "",
+    "Strict field-to-variable mapping (never swap values):",
+    "- First name => %firstName%",
+    "- Last name => %lastName%",
+    "- Full name / Legal name => %fullName%",
+    "- Email => %email%",
+    "- Phone / Mobile => %phone%",
+    "- Location / City => %location%",
+    "- LinkedIn => %linkedinUrl%",
+    "- Portfolio / Website => %portfolioUrl%",
+    "- Current title / Desired role => %targetRole%",
+    "- Years of experience => %yearsExperience%",
+    "- Skills => %skills%",
+    "- Work authorization => %workAuthorization%",
+    "- Sponsorship => %sponsorshipRequirement%",
+    "- Salary expectation => %salaryExpectation%",
+    "- Start date / Availability => %startAvailability%",
+    "- Relocation => %relocationPreference%",
+    "- Background check consent => %backgroundCheckConsent%",
+    "- Gender => %genderIdentity%",
+    "- Hispanic/Latino => %hispanicLatinoIdentity%",
+    "- Veteran status => %veteranStatus%",
+    "- Disability status => %disabilityStatus%",
+    "",
+    "Accuracy rules:",
+    "- Match by label, placeholder, and nearby text before typing.",
+    "- Clear the field before entering a new value when needed.",
+    "- Never place email in name fields, name in email fields, or phone in non-phone fields.",
+    "- Never leave literal placeholders like %firstName% in the UI.",
+    "- For yes/no or select fields, choose the option that best matches the mapped variable value.",
+    "",
+    "Text inputs and textareas have already been filled via observe()+act() before you started.",
+    "- Skip any field that already has the correct value — do NOT re-type it.",
+    "- Focus only on: dropdowns, select menus, radio buttons, checkboxes, country pickers, and empty fields.",
+    "- For any textarea that is still empty, write a SHORT 2-3 sentence answer (under 400 characters). NEVER type more than 400 characters.",
+    "",
+    "For job-specific technical or skills questions (e.g. 'What is your strongest programming language?', 'Which framework do you prefer?', 'Are you stronger in X or Y?'):",
+    "- Infer the best truthful answer from %skills%, %workExperience%, %projects%, and %targetRole%.",
+    "- For preference/comparison questions (e.g. 'Kotlin or Java?'), pick the technology most prominent in %skills% or %workExperience%.",
+    "- Do NOT leave these blank. Always provide a specific answer.",
+    "",
+    "For location/city dropdowns: use %location% — type it to search, then select the matching option.",
+    "For resume upload: attach %resumePdfUrl% when a resume/CV upload field exists.",
+    "For source question 'How did you hear about this role?', use 'LinkedIn'.",
+    "",
+    "Hard blockers (stop and report blocker, do NOT pretend success):",
+    "- Required CAPTCHA or account wall",
+    "- Required answer that needs a secret or information not in variables",
+    "- Required field cannot be interacted with due to page/app error",
+    "",
+    "Before submit, run a final verification on the page:",
+    "- Required visible fields are filled",
+    "- Name, email, phone are in the correct fields",
+    "- No obvious misfilled values remain",
+    "- Resume upload completed if required",
+    "",
+    "Submit only after verification passes. If blocked, finish with taskComplete=false and include the exact blocker.",
+  ].join("\n");
 
-  if (result.success) {
-    return { submitted: true };
+  let result: {
+    success: boolean;
+    message?: string;
+  };
+
+  // observe() + act() for standard fields — deterministic, no AI re-lookup.
+  // Agent is left only with dropdowns, radio buttons, custom questions, submit.
+  try {
+    await observeAndFillStandardFields({
+      session: input.session,
+      variables: input.variables,
+      shortMotivation: input.shortMotivation,
+    });
+  } catch (err) {
+    console.warn("[agent/apply/observeAndFill]", err);
+  }
+
+  try {
+    result = await agent.execute({
+      maxSteps: 40,
+      toolTimeout: 45_000,
+      variables: input.variables,
+      instruction,
+    });
+  } catch (error) {
+    console.error("[agent/apply/external-execute]", error);
+
+    if (!isModelNotFoundError(error)) {
+      return {
+        submitted: false,
+        error: "Could not run external apply automation.",
+      };
+    }
+
+    // If the configured Claude model alias is unavailable, retry with a
+    // stable Claude Sonnet fallback so this path stays Anthropic-only.
+    const fallbackAgent = input.session.stagehand.agent({
+      mode: "hybrid",
+      model: CLAUDE_SONNET_FALLBACK_MODEL,
+    });
+
+    try {
+      result = await fallbackAgent.execute({
+        maxSteps: 40,
+        toolTimeout: 45_000,
+        variables: input.variables,
+        instruction,
+      });
+    } catch (fallbackError) {
+      console.error("[agent/apply/external-execute-fallback]", fallbackError);
+      return {
+        submitted: false,
+        error:
+          "Configured Claude model is unavailable and fallback execution failed.",
+      };
+    }
   }
 
   const review = await extractExternalApplyReview(input);
+
+  let confirmationSubmitted = false;
+
+  try {
+    const confirmation = await input.session.stagehand.extract(
+      [
+        "Determine whether the external application was submitted.",
+        "submitted is TRUE for any of: explicit confirmation message, thank-you page, success banner, application ID shown, OR a post-submission next-step page (e.g. 'complete your interview', 'your application is under review', 'check your email', 'you\'ve applied', 'next steps').",
+        "submitted is FALSE only if the application form is still open and unfilled, or if a clear submission error occurred.",
+      ].join(" "),
+      submissionSchema,
+    );
+    confirmationSubmitted = confirmation.submitted;
+  } catch (error) {
+    console.error("[agent/apply/external-confirmation]", error);
+  }
+
+  if (confirmationSubmitted) {
+    return {
+      submitted: true,
+      review: review ?? undefined,
+    };
+  }
+
+  if (!result.success) {
+    return {
+      submitted: false,
+      review: review ?? undefined,
+      error:
+        review?.blockers.join("; ") ||
+        review?.summary ||
+        result.message ||
+        "Could not complete the application. Check the Browserbase recording for details.",
+    };
+  }
 
   return {
     submitted: false,
@@ -891,8 +1146,7 @@ async function submitExternalApplicationWithAgent(input: {
     error:
       review?.blockers.join("; ") ||
       review?.summary ||
-      result.message ||
-      "Could not complete the application. Check the Browserbase recording for details.",
+      "Agent marked the task done, but submission could not be confirmed.",
   };
 }
 
@@ -942,6 +1196,7 @@ async function applyEasyApplyJob(input: {
       timeout: 600,
       contextId: input.contextId,
       persistContext: true,
+      modelName: EASY_APPLY_AGENT_MODEL,
       metadata: {
         feature: "easy-apply",
         runId: input.runId,
@@ -972,22 +1227,73 @@ async function applyEasyApplyJob(input: {
 
     const variables = buildApplicationVariables(input.profile, input.job);
     const agent = session.stagehand.agent({
-      mode: "dom",
-      model: EXTERNAL_APPLY_AGENT_MODEL,
-      executionModel: EXTERNAL_APPLY_AGENT_MODEL,
+      mode: "hybrid",
+      model: EASY_APPLY_AGENT_MODEL,
     });
+
+    const easyApplyInstruction = [
+      "Goal: submit this LinkedIn job application using LinkedIn Easy Apply.",
+      "",
+      "IMPORTANT — LinkedIn pre-fills most fields from the user's saved profile.",
+      "Your PRIMARY job is to click Next/Review/Submit through each modal step.",
+      "Only fill in fields that are visibly EMPTY or show a validation error.",
+      "",
+      "Step-by-step process:",
+      "1. Find and click the 'Easy Apply' button to open the modal.",
+      "2. On EACH modal step:",
+      "   a. Check for any empty required fields (marked with * or showing an error).",
+      "   b. If a required field is empty, fill it using the variable mapping below.",
+      "   c. Once all required fields on the current step have values, click 'Next'.",
+      "3. Repeat step 2 for every modal step until the final review screen.",
+      "4. On the review screen, click 'Submit application'.",
+      "5. Call done() once submitted.",
+      "",
+      "Field mapping (only fill when a field is empty):",
+      "- Name → %fullName% (or %firstName% / %lastName% separately)",
+      "- Email → %email%",
+      "- Phone → %phone% (country code → %phoneCountryCode%)",
+      "- Location / City → %location%",
+      "- LinkedIn URL → %linkedinUrl%",
+      "- Website / Portfolio → %portfolioUrl%",
+      "- Target role / Current title → %targetRole%",
+      "- Years of experience → %yearsExperience%",
+      "- Work authorization → %workAuthorization%",
+      "- Sponsorship → %sponsorshipRequirement%",
+      "- Salary → %salaryExpectation%",
+      "- Start date / Notice period → %startAvailability%",
+      "- Gender → %genderIdentity%",
+      "- Hispanic/Latino → %hispanicLatinoIdentity%",
+      "- Veteran status → %veteranStatus%",
+      "- Disability status → %disabilityStatus%",
+      "- Relocation → %relocationPreference%",
+      "- Background check → %backgroundCheckConsent%",
+      "",
+      "For numeric 'years of experience with X' questions: answer with %yearsExperience%.",
+      "For yes/no skill or tool questions: YES if X appears in %skills% or %workExperience%, else NO.",
+      "For short free-text questions: 1-2 sentences from %workExperience%, %skills%, %projects%.",
+      "For 'how did you hear about this role': answer 'LinkedIn'.",
+      "",
+      "Resume: LinkedIn already has the user's resume selected. Do NOT upload a new file.",
+      "Never click Save, Follow, or any external Apply button outside the Easy Apply modal.",
+      "Optional empty fields should not block submission — skip them.",
+      "If a required question cannot be answered from the variables, stop and report the exact blocker.",
+    ].join("\n");
 
     await agent.execute({
       page,
-      maxSteps: 18,
-      toolTimeout: 25_000,
+      maxSteps: 30,
+      toolTimeout: 30_000,
       variables,
-      instruction:
-        "Apply to this LinkedIn job using LinkedIn Easy Apply. Click the Easy Apply button, then work only inside the LinkedIn Easy Apply modal. Use the already selected LinkedIn resume. Complete every step you can with the applicant variables. Use %fullName% for name, %email% for Email address, %phoneCountryCode% for phone country code, %phone% for phone number, %location% for location, %linkedinUrl% for LinkedIn URL, %portfolioUrl% for portfolio URL, %targetRole% for target role, %experienceLevel% for experience level, %yearsExperience% for years of experience, %skills% for skills, %workExperience% for work history, %projects% for projects, %education% for education, %achievements% for achievements, %workAuthorization% for work authorization, %sponsorshipRequirement% for sponsorship, %salaryExpectation% for salary, %startAvailability% for start date or notice period, %relocationPreference% for relocation, %backgroundCheckConsent% for background check, %genderIdentity% for gender, %hispanicLatinoIdentity% for Hispanic/Latino, %veteranStatus% for veteran status, %disabilityStatus% for disability, and %applicationNotes% for recurring application context. For ordinary required job-fit questions, infer the best truthful answer from the profile variables instead of stopping. For yes/no questions about skills, tools, frameworks, role responsibilities, remote preference, or experience, answer from %skills%, %workExperience%, %projects%, %education%, %achievements%, %targetRole%, %experienceLevel%, %remotePreference%, and %yearsExperience%. If the modal asks a required numeric question like 'How many years of work experience do you have with X?', answer with %yearsExperience% unless a more specific numeric answer is visible in the profile variables. For legal/personal disclosure questions, answer only from the matching saved variable; Prefer not to answer is a valid truthful answer when the form offers a similar option. Stop without submitting if a required legal, sponsorship, salary, demographic, veteran, disability, background check, security-clearance, assessment, or other truth-sensitive answer is unavailable. For short free-text questions about relevant experience, summarize the strongest matching evidence from work experience, projects, skills, education, and achievements. Click Next, Review, and finally Submit application when all required fields on the current step are complete. Never click Save. Never click Follow. Never click a non-Easy-Apply external Apply button. Optional unanswered fields should not block submission.",
+      instruction: easyApplyInstruction,
     });
 
     const output = await session.stagehand.extract(
-      "Inspect the current LinkedIn Easy Apply state. applied is true only if the application was submitted or a submitted confirmation is visible. needsReview is true only if a required unanswered question remains that needs human judgment or unavailable legal/personal disclosure. reason should be a short final status or exact blocker.",
+      [
+        "Inspect the current LinkedIn Easy Apply state.",
+        "applied is true if the application was submitted OR if a post-submission screen is visible (confirmation, 'application sent', 'your application was sent', or any next-step page after submission).",
+        "needsReview is true only if a required question remains unanswered that needs human judgment.",
+        "reason should be a short final status or the exact blocker.",
+      ].join(" "),
       easyApplyResultSchema,
     );
 
@@ -1117,8 +1423,11 @@ async function applyToJob(input: {
     }
 
     session = await createStagehandSession({
-      timeout: input.mode === "manual" ? 600 : 120,
+      timeout: input.mode === "manual" ? 900 : 120,
       experimental: input.mode === "manual",
+      modelName:
+        input.mode === "manual" ? EXTERNAL_APPLY_AGENT_MODEL : undefined,
+      viewport: EXTERNAL_APPLY_VIEWPORT,
       metadata: {
         feature: input.mode === "manual" ? "manual-apply" : "apply-agent",
         runId: input.runId,
@@ -1154,12 +1463,10 @@ async function applyToJob(input: {
       variables.resumePdfUrl = input.resumeUrl;
     }
 
-    const resumeAttached =
-      input.mode !== "manual" &&
-      (await tryAttachResume({
-        session,
-        resumeFilePath,
-      }));
+    const resumeAttached = await tryAttachResume({
+      session,
+      resumeFilePath,
+    });
 
     if (resumeAttached) {
       await logAgentMessage({
@@ -1174,11 +1481,14 @@ async function applyToJob(input: {
       });
     }
 
+    const shortMotivation = await generateShortMotivation({ variables });
+
     const submission =
       input.mode === "manual"
         ? await submitExternalApplicationWithAgent({
             session,
             variables,
+            shortMotivation,
           })
         : {
             submitted: await submitApplication({

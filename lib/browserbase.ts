@@ -7,6 +7,10 @@ type BrowserbaseSessionOptions = {
   metadata?: Record<string, string>;
   contextId?: string;
   persistContext?: boolean;
+  viewport?: {
+    width: number;
+    height: number;
+  };
 };
 
 export type BrowserbaseSession = {
@@ -82,6 +86,7 @@ export async function createBrowserbaseSession(
       advancedStealth: shouldUseAdvancedStealth(),
       recordSession: true,
       solveCaptchas: true,
+      viewport: options.viewport,
       context: options.contextId
         ? {
             id: options.contextId,
@@ -124,7 +129,9 @@ export async function createBrowserbaseSessionWithDebugUrl(
   };
 }
 
-export async function releaseBrowserbaseSession(sessionId: string): Promise<void> {
+export async function releaseBrowserbaseSession(
+  sessionId: string,
+): Promise<void> {
   const client = createBrowserbaseClient();
 
   await client.sessions.update(sessionId, {

@@ -44,7 +44,7 @@ Read in this exact order before any implementation:
 - Easy Apply is never touched — external apply URLs only
 - Every Stagehand act() call is wrapped in try/catch
 - Match threshold always comes from MATCH_THRESHOLD in `lib/utils.ts`
-- AgentSpan step IDs always use format apply-{job_id}
+- Apply step IDs always use format apply-{job_id}
 
 ## Available Skills
 
@@ -71,6 +71,7 @@ Backend-as-a-service (BaaS) platform providing:
 ## Installation
 
 The following is a step-by-step guide to installing and using the InsForge TypeScript SDK for Web applications. If you are building other types of applications, please refer to:
+
 - [Swift SDK documentation](/sdks/swift/overview) for iOS, macOS, tvOS, and watchOS applications.
 - [Kotlin SDK documentation](/sdks/kotlin/overview) for Android applications.
 - [REST API documentation](/sdks/rest/overview) for direct HTTP API access.
@@ -92,13 +93,12 @@ npm install @insforge/sdk@latest
 You must create a client instance using `createClient()` with your base URL and anon key:
 
 ```javascript
-import { createClient } from '@insforge/sdk';
+import { createClient } from "@insforge/sdk";
 
 const client = createClient({
-  baseUrl: 'https://your-app.region.insforge.app',  // Your InsForge backend URL
-  anonKey: 'your-anon-key-here'       // Get this from backend metadata
+  baseUrl: "https://your-app.region.insforge.app", // Your InsForge backend URL
+  anonKey: "your-anon-key-here", // Get this from backend metadata
 });
-
 ```
 
 **API BASE URL**: Your API base URL is `https://your-app.region.insforge.app`.
@@ -141,6 +141,7 @@ These documentations are mostly for TypeScript SDK. For other languages, you can
 You can fetch sdk documentation using the `fetch-sdk-docs` MCP tool with specific feature type and language.
 
 Available feature types:
+
 - db - Database operations
 - storage - File storage operations
 - functions - Serverless functions invocation
@@ -149,6 +150,7 @@ Available feature types:
 - realtime - Real-time pub/sub (database + client events) via WebSockets
 
 Available languages:
+
 - typescript - JavaScript/TypeScript SDK
 - swift - Swift SDK (for iOS, macOS, tvOS, and watchOS)
 - kotlin - Kotlin SDK (for Android and JVM applications)

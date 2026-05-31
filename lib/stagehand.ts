@@ -9,7 +9,7 @@ import {
   releaseBrowserbaseSession,
 } from "@/lib/browserbase";
 
-const STAGEHAND_MODEL = "openai/gpt-4o";
+const DEFAULT_STAGEHAND_MODEL = "openai/gpt-4o";
 
 type StagehandSessionOptions = {
   timeout?: number;
@@ -17,6 +17,11 @@ type StagehandSessionOptions = {
   contextId?: string;
   persistContext?: boolean;
   experimental?: boolean;
+  modelName?: string;
+  viewport?: {
+    width: number;
+    height: number;
+  };
 };
 
 export type StagehandSession = {
@@ -45,13 +50,68 @@ function getRequiredEnv(name: string): string {
   return value;
 }
 
+export function normalizeStagehandModelName(modelName: string): string {
+  const trimmed = modelName.trim();
+  const normalized = trimmed.toLowerCase();
+
+  // Add anthropic/ prefix for bare Claude model names
+  if (
+    normalized === "claude-sonnet-4-6" ||
+    normalized === "claude-4.6-sonnet"
+  ) {
+    return "anthropic/claude-sonnet-4-6";
+  }
+
+  if (
+    normalized === "claude-3-7-sonnet-latest" ||
+    normalized === "claude-3-7-sonnet-20250219"
+  ) {
+    return "anthropic/claude-3-7-sonnet-20250219";
+  }
+
+  return trimmed;
+}
+
+function resolveStagehandModel(modelName?: string): string {
+  const explicitModel = modelName?.trim();
+
+  if (explicitModel) {
+    return normalizeStagehandModelName(explicitModel);
+  }
+
+  const envModel = process.env.STAGEHAND_MODEL?.trim();
+
+  if (envModel) {
+    return normalizeStagehandModelName(envModel);
+  }
+
+  return DEFAULT_STAGEHAND_MODEL;
+}
+
+function resolveStagehandApiKey(modelName: string): string {
+  const normalizedModel = modelName.toLowerCase();
+
+  if (
+    normalizedModel.startsWith("anthropic/") ||
+    normalizedModel.includes("claude")
+  ) {
+    return getRequiredEnv("CLAUDE_API_KEY");
+  }
+
+  return getRequiredEnv("OPENAI_API_KEY");
+}
+
 export async function createStagehandSession(
   options: StagehandSessionOptions = {},
 ): Promise<StagehandSession> {
+  const modelName = resolveStagehandModel(options.modelName);
+  const modelApiKey = resolveStagehandApiKey(modelName);
+
   const browserbaseSession = await createBrowserbaseSession({
     timeout: options.timeout,
     contextId: options.contextId,
     persistContext: options.persistContext,
+    viewport: options.viewport,
     metadata: {
       feature: "stagehand-setup",
       ...options.metadata,
@@ -67,8 +127,8 @@ export async function createStagehandSession(
       projectId: getRequiredEnv("BROWSERBASE_PROJECT_ID"),
       browserbaseSessionID: browserbaseSession.id,
       model: {
-        modelName: STAGEHAND_MODEL,
-        apiKey: getRequiredEnv("OPENAI_API_KEY"),
+        modelName,
+        apiKey: modelApiKey,
       },
       disablePino: true,
       disableAPI: true,
@@ -98,6 +158,9 @@ export async function createStagehandSession(
 export async function connectStagehandToBrowserbaseSession(input: {
   sessionId: string;
 }): Promise<StagehandSession> {
+  const modelName = resolveStagehandModel();
+  const modelApiKey = resolveStagehandApiKey(modelName);
+
   const browserbaseSession: BrowserbaseSession = {
     id: input.sessionId,
     connectUrl: "",
@@ -112,8 +175,8 @@ export async function connectStagehandToBrowserbaseSession(input: {
       projectId: getRequiredEnv("BROWSERBASE_PROJECT_ID"),
       browserbaseSessionID: input.sessionId,
       model: {
-        modelName: STAGEHAND_MODEL,
-        apiKey: getRequiredEnv("OPENAI_API_KEY"),
+        modelName,
+        apiKey: modelApiKey,
       },
       disablePino: true,
       disableAPI: true,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { applyToQueuedJobsWithAgentSpan } from "@/agent";
+import { applyToQueuedJobs } from "@/agent";
 import { getAccessToken, getCurrentUser } from "@/lib/auth";
 
 type ApiResponse =
@@ -28,7 +28,9 @@ function isRequestBody(value: unknown): value is RequestBody {
   return value !== null && typeof value === "object";
 }
 
-async function parseRequestBody(request: NextRequest): Promise<RequestBody | null> {
+async function parseRequestBody(
+  request: NextRequest,
+): Promise<RequestBody | null> {
   try {
     const body: unknown = await request.json();
     return isRequestBody(body) ? body : null;
@@ -71,7 +73,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    const applyResult = await applyToQueuedJobsWithAgentSpan({
+    const applyResult = await applyToQueuedJobs({
       accessToken,
       userId: user.id,
       runId,

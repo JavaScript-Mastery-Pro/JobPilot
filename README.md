@@ -25,7 +25,6 @@ An experimental Browserbase/Stagehand apply path is included for review — see 
 - **InsForge** — PostgreSQL database, auth, and file storage
 - **Browserbase** — cloud browser sessions with context persistence and CAPTCHA solving
 - **Stagehand** — AI browser agent on top of Browserbase
-- **AgentSpan** — durable agent orchestration with idempotency
 - **OpenAI GPT-4o** — matching, cover letter generation, resume tailoring, and form-filling agent
 - **Tailwind CSS v3.4** + shadcn/ui
 
@@ -61,10 +60,7 @@ BROWSERBASE_PROJECT_ID=your-browserbase-project-id
 # OpenAI
 OPENAI_API_KEY=your-openai-api-key
 
-# AgentSpan (durable agent orchestration)
-AGENTSPAN_API_KEY=your-agentspan-api-key
-
-# App URL (used for OAuth callback and AgentSpan webhooks)
+# App URL (used for OAuth callback)
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 
 # Optional: PostHog analytics
